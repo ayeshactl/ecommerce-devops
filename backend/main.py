@@ -1,3 +1,4 @@
+import socket
 import json
 import redis
 
@@ -46,6 +47,11 @@ def root():
 def health():
     return {"status": "healthy"}
 
+@app.get("/instance")
+def instance():
+    return {
+        "instance": socket.gethostname()
+    }
 
 @app.get("/db-health")
 def database_health():
