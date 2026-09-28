@@ -1,3 +1,8 @@
+import time
+
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Histogram
+from fastapi.responses import Response
+
 import socket
 import json
 import redis
@@ -9,6 +14,39 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="ShopSphere E-Commerce API")
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total number of HTTP requests",
+    ["method", "endpoint"]
+)
+
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency in seconds",
+    ["method", "endpoint"]
+)
+
+@app.middleware("http")
+async def count_requests(request, call_next):
+    start_time = time.perf_counter()
+
+    response = await call_next(request)
+
+    duration = time.perf_counter() - start_time
+
+    if request.url.path != "/metrics":
+        REQUEST_COUNT.labels(
+            method=request.method,
+            endpoint=request.url.path
+        ).inc()
+
+        REQUEST_LATENCY.labels(
+            method=request.method,
+            endpoint=request.url.path
+        ).observe(duration)
+
+    return response
+
 
 app.add_middleware( 
     CORSMiddleware,
@@ -46,6 +84,13 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+@app.get("/metrics")
+def metrics():
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
 
 @app.get("/instance")
 def instance():
