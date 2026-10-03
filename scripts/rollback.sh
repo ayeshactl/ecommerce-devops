@@ -2,49 +2,64 @@
 
 set -e
 
-if [ -z "$1" ]; then
-    echo "Usage: ./scripts/rollback.sh <commit-id>"
-    echo ""
-    echo "Recent commits:"
-    git log --oneline -5
-    exit 1
-fi
-
-TARGET_COMMIT=$1
+NGINX_CONFIG="nginx/default.conf"
 
 echo "======================================"
-echo " Starting Rollback"
-echo " Target commit: $TARGET_COMMIT"
+echo " Blue/Green E-Commerce Rollback"
 echo "======================================"
 
-# Make sure the commit exists
-git rev-parse --verify "$TARGET_COMMIT^{commit}" > /dev/null
-
-# Do not rollback if there are uncommitted changes
-if [ -n "$(git status --porcelain)" ]; then
-    echo "Rollback stopped!"
-    echo "Uncommitted changes exist. Commit or stash them first."
-    exit 1
-fi
-
-echo "1. Switching to target version..."
-git checkout "$TARGET_COMMIT"
-
-echo "2. Rebuilding containers..."
-docker compose build
-
-echo "3. Starting target version..."
-docker compose up -d --scale backend=2
-
-echo "4. Waiting for services..."
-sleep 10
-
-echo "5. Checking application health..."
-if curl -fsS http://localhost/api/health > /dev/null; then
-    echo "Rollback successful!"
-    echo "Application is healthy."
+# Detect current active backend
+if grep -q "server backend-blue:8000" "$NGINX_CONFIG"; then
+    ACTIVE="backend-blue"
+    ROLLBACK_TARGET="backend-green"
 else
-    echo "Rollback completed, but health check FAILED!"
+    ACTIVE="backend-green"
+    ROLLBACK_TARGET="backend-blue"
+fi
+
+echo "Current active backend : $ACTIVE"
+echo "Rollback target        : $ROLLBACK_TARGET"
+echo ""
+
+echo "1. Checking rollback target..."
+
+CONTAINER_ID=$(docker compose ps -q "$ROLLBACK_TARGET")
+
+if [ -z "$CONTAINER_ID" ]; then
+    echo "Rollback FAILED!"
+    echo "$ROLLBACK_TARGET is not running."
+    exit 1
+fi
+
+echo "2. Checking rollback target health..."
+
+HEALTH=$(docker inspect \
+    --format='{{.State.Health.Status}}' \
+    "$CONTAINER_ID" 2>/dev/null || echo "unknown")
+
+if [ "$HEALTH" != "healthy" ]; then
+    echo "Rollback FAILED!"
+    echo "$ROLLBACK_TARGET is not healthy."
+    echo "Traffic remains on $ACTIVE."
+    exit 1
+fi
+
+echo "$ROLLBACK_TARGET is healthy."
+
+echo "3. Switching traffic to previous environment..."
+
+./scripts/switch-backend.sh "${ROLLBACK_TARGET#backend-}"
+
+echo "4. Verifying production health..."
+
+if curl -fsS http://localhost/api/health > /dev/null; then
+    echo ""
+    echo "Rollback successful!"
+    echo "Traffic is now running on $ROLLBACK_TARGET."
+    echo "$ACTIVE remains available."
+else
+    echo ""
+    echo "Rollback verification FAILED!"
     exit 1
 fi
 
